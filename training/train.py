@@ -217,6 +217,41 @@ def parse_args():
             " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
         ),
     )
+    parser.add_argument(
+        "--custom_dataset_root",
+        type=str,
+        default=None,
+        help="Root directory containing 'diffuse' and 'normal' subfolders for custom texture/normal training data.",
+    )
+    parser.add_argument(
+        "--custom_texture_dir",
+        type=str,
+        default=None,
+        help="Optional override for the texture/diffuse directory. Overrides the value inferred from --custom_dataset_root.",
+    )
+    parser.add_argument(
+        "--custom_normal_dir",
+        type=str,
+        default=None,
+        help="Optional override for the normal map directory. Overrides the value inferred from --custom_dataset_root.",
+    )
+    parser.add_argument(
+        "--custom_image_height",
+        type=int,
+        default=None,
+        help="Resize custom dataset samples to this height before training. Must be used together with --custom_image_width.",
+    )
+    parser.add_argument(
+        "--custom_image_width",
+        type=int,
+        default=None,
+        help="Resize custom dataset samples to this width before training. Must be used together with --custom_image_height.",
+    )
+    parser.add_argument(
+        "--disable_custom_horizontal_flip",
+        action="store_true",
+        help="Disable random horizontal flips for the custom texture/normal dataset.",
+    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -357,13 +392,51 @@ def main():
     lr_scheduler = LambdaLR(optimizer=optimizer, lr_lambda=lr_func)
 
     # Training datasets
-    hypersim_root_dir = "data/hypersim/processed"
-    vkitti_root_dir   = "data/virtual_kitti_2"
-    train_dataset_hypersim = Hypersim(root_dir=hypersim_root_dir, transform=True)
-    train_dataset_vkitti   = VirtualKITTI2(root_dir=vkitti_root_dir, transform=True)
-    train_dataloader_vkitti   = torch.utils.data.DataLoader(train_dataset_vkitti,   shuffle=True, batch_size=args.train_batch_size, num_workers=args.dataloader_num_workers)
-    train_dataloader_hypersim = torch.utils.data.DataLoader(train_dataset_hypersim, shuffle=True, batch_size=args.train_batch_size, num_workers=args.dataloader_num_workers)
-    train_dataloader = MixedDataLoader(train_dataloader_hypersim, train_dataloader_vkitti, split1=9, split2=1)
+    use_custom_dataset = (
+        (args.custom_dataset_root is not None)
+        or (args.custom_texture_dir is not None)
+        or (args.custom_normal_dir is not None)
+    )
+    if use_custom_dataset:
+        texture_dir = args.custom_texture_dir
+        normal_dir = args.custom_normal_dir
+        if args.custom_dataset_root is not None:
+            default_root = args.custom_dataset_root
+            if texture_dir is None:
+                texture_dir = os.path.join(default_root, "diffuse")
+            if normal_dir is None:
+                normal_dir = os.path.join(default_root, "normal")
+        if texture_dir is None or normal_dir is None:
+            raise ValueError(
+                "Custom dataset requested but texture and normal directories were not fully specified."
+            )
+        if (args.custom_image_height is None) ^ (args.custom_image_width is None):
+            raise ValueError("Provide both --custom_image_height and --custom_image_width, or neither.")
+        custom_resize = None
+        if args.custom_image_height is not None:
+            custom_resize = (args.custom_image_height, args.custom_image_width)
+        train_dataset_custom = TextureNormalDataset(
+            texture_dir=texture_dir,
+            normal_dir=normal_dir,
+            resize=custom_resize,
+            random_horizontal_flip=not args.disable_custom_horizontal_flip,
+        )
+        train_dataloader = torch.utils.data.DataLoader(
+            train_dataset_custom,
+            shuffle=True,
+            batch_size=args.train_batch_size,
+            num_workers=args.dataloader_num_workers,
+        )
+        num_train_examples = len(train_dataset_custom)
+    else:
+        hypersim_root_dir = "data/hypersim/processed"
+        vkitti_root_dir   = "data/virtual_kitti_2"
+        train_dataset_hypersim = Hypersim(root_dir=hypersim_root_dir, transform=True)
+        train_dataset_vkitti   = VirtualKITTI2(root_dir=vkitti_root_dir, transform=True)
+        train_dataloader_vkitti   = torch.utils.data.DataLoader(train_dataset_vkitti,   shuffle=True, batch_size=args.train_batch_size, num_workers=args.dataloader_num_workers)
+        train_dataloader_hypersim = torch.utils.data.DataLoader(train_dataset_hypersim, shuffle=True, batch_size=args.train_batch_size, num_workers=args.dataloader_num_workers)
+        train_dataloader = MixedDataLoader(train_dataloader_hypersim, train_dataloader_vkitti, split1=9, split2=1)
+        num_train_examples = len(train_dataset_vkitti) + len(train_dataset_hypersim)
 
     # Prepare everything with `accelerator` (Move to GPU)
     unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
@@ -375,11 +448,9 @@ def main():
     if accelerator.mixed_precision == "fp16":
         weight_dtype = torch.float16
         args.mixed_precision = accelerator.mixed_precision
-        unet.to(dtype=weight_dtype)
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
         args.mixed_precision = accelerator.mixed_precision
-        unet.to(dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)    
     text_encoder.to(accelerator.device, dtype=weight_dtype)
 
@@ -404,7 +475,7 @@ def main():
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
     logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_dataset_vkitti)+len(train_dataset_hypersim)}")
+    logger.info(f"  Num examples = {num_train_examples}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
@@ -460,6 +531,14 @@ def main():
     # Get noise scheduling parameters for later conversion from a parameterized prediction into latent.
     alpha_prod = noise_scheduler.alphas_cumprod.to(accelerator.device, dtype=weight_dtype)
     beta_prod  = 1 - alpha_prod
+
+    def rlog(msg):
+        rank = accelerator.process_index
+        os.makedirs(os.path.join(args.output_dir, "rank_logs"), exist_ok=True)
+        with open(os.path.join(args.output_dir, "rank_logs", f"rank{rank}.log"), "a") as f:
+            f.write(msg + "\n")
+            f.flush()
+
  
     # Training Loop
     for epoch in range(first_epoch, args.num_train_epochs):
@@ -469,10 +548,12 @@ def main():
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):     
                 
+                rlog("encode start")
                 # RGB latent
                 rgb_latents = encode_image(vae, batch["rgb"].to(device=accelerator.device, dtype=weight_dtype))
                 rgb_latents = rgb_latents * vae.config.scaling_factor
-         
+                rlog("encode done")
+
                 # Validity mask
                 val_mask = batch["val_mask"].bool().to(device=accelerator.device)
 
@@ -490,15 +571,20 @@ def main():
                 else:
                     raise ValueError(f"Unknown noise type {args.noise_type}")
 
+                rlog("unet forward start")
                 # Generate UNet prediction
                 encoder_hidden_states = empty_encoding.repeat(len(batch["rgb"]), 1, 1)
+                rlog("unet hidden states done")
                 unet_input = (
                     torch.cat((rgb_latents, noisy_latents), dim=1).to(accelerator.device)
                     if args.noise_type is not None
                     else rgb_latents
-                )   
+                )
+                rlog("input concat done")
                 model_pred = unet(unet_input, timesteps, encoder_hidden_states, return_dict=False)[0]
+                rlog("unet forward done")
 
+                
                 # End-to-end fine-tuning 
                 loss = torch.tensor(0.0, device=accelerator.device, requires_grad=True)
                 if val_mask.any():
@@ -524,9 +610,13 @@ def main():
                             -noise_scheduler.config.clip_sample_range, noise_scheduler.config.clip_sample_range
                         )
                     
+                    rlog("vae decode start")
                     # Decode latent prediction
                     current_latent_estimate = current_latent_estimate / vae.config.scaling_factor
+                    current_latent_estimate = current_latent_estimate.to(dtype=weight_dtype)
                     current_estimate = decode_image(vae, current_latent_estimate)
+                    rlog("vae decode done")
+
 
                     # Post-process predicted images and retrieve ground truth
                     if args.modality == "depth":
@@ -541,6 +631,7 @@ def main():
                     else:
                         raise ValueError(f"Unknown modality {args.modality}")
 
+                    rlog("loss start")
                     # Compute task-specific loss   
                     estimation_loss = 0
                     if args.modality == "depth":              
@@ -554,10 +645,13 @@ def main():
                     else:
                         raise ValueError(f"Unknown modality {args.modality}")
                     loss = loss + estimation_loss
-                    
+                    rlog("loss done")
+
+                rlog("gather start") 
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
                 train_loss += avg_loss.item() / args.gradient_accumulation_steps
+                rlog("gather done")
 
                 # Backpropagate
                 accelerator.backward(loss)

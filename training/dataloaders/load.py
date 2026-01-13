@@ -5,6 +5,7 @@ import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
 import os
+from pathlib import Path
 from PIL import Image
 import numpy as np
 import random
@@ -374,3 +375,126 @@ class VirtualKITTI2(Dataset):
         normal_tensor[2,~valid_depth_mask.squeeze()] = 0
 
         return {"rgb": rgb_tensor, "depth": depth_tensor, 'metric': metric_tensor, 'normals': normal_tensor, "val_mask": valid_depth_mask, "domain": "outdoor"}
+
+
+class TextureNormalDataset(Dataset):
+    """
+    Dataset for texture (diffuse) -> normal supervision stored in two separate folders.
+    Expected folder structure:
+        texture_dir/XXXX_diffuse.png
+        normal_dir/XXXX_normals.png
+    File stems are matched after stripping known suffixes (diffuse, normals, etc.).
+    """
+
+    def __init__(
+        self,
+        texture_dir,
+        normal_dir,
+        resize=None,
+        random_horizontal_flip=True,
+    ):
+        self.texture_dir = Path(texture_dir)
+        self.normal_dir = Path(normal_dir)
+        if not self.texture_dir.exists():
+            raise ValueError(f"Texture directory {self.texture_dir} does not exist")
+        if not self.normal_dir.exists():
+            raise ValueError(f"Normal directory {self.normal_dir} does not exist")
+
+        self.resize = resize
+        self.random_horizontal_flip = random_horizontal_flip
+        self.to_tensor = transforms.ToTensor()
+        if resize is not None:
+            self.rgb_resize = transforms.Resize(resize, interpolation=Image.BICUBIC)
+            self.normal_resize = transforms.Resize(resize, interpolation=Image.BILINEAR)
+        else:
+            self.rgb_resize = None
+            self.normal_resize = None
+
+        self.valid_ext = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+        self.pairs = self._build_pairs()
+        if len(self.pairs) == 0:
+            raise ValueError(
+                f"No texture/normal pairs were found in {self.texture_dir} and {self.normal_dir}"
+            )
+
+    def _id_from_stem(self, stem):
+        lowered = stem.lower()
+        suffixes = [
+            "_diffuse",
+            "-diffuse",
+            "_albedo",
+            "-albedo",
+            "_color",
+            "-color",
+            "_col",
+            "_normal",
+            "-normal",
+            "_normals",
+            "-normals",
+            "_normalmap",
+            "-normalmap",
+            "_nrm",
+            "-nrm",
+        ]
+        for suffix in suffixes:
+            if lowered.endswith(suffix):
+                return lowered[: -len(suffix)]
+        return lowered
+
+    def _build_pairs(self):
+        normal_index = {}
+        for normal_path in sorted(self.normal_dir.glob("*")):
+            if normal_path.is_dir() or normal_path.suffix.lower() not in self.valid_ext:
+                continue
+            base_id = self._id_from_stem(normal_path.stem)
+            normal_index[base_id] = normal_path
+
+        pairs = []
+        for texture_path in sorted(self.texture_dir.glob("*")):
+            if texture_path.is_dir() or texture_path.suffix.lower() not in self.valid_ext:
+                continue
+            base_id = self._id_from_stem(texture_path.stem)
+            if base_id not in normal_index:
+                raise ValueError(
+                    f"Could not find a normal map for texture {texture_path.name}"
+                )
+            pairs.append((texture_path, normal_index[base_id]))
+        return pairs
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def __getitem__(self, idx):
+        texture_path, normal_path = self.pairs[idx]
+
+        rgb_image = Image.open(texture_path).convert("RGB")
+        normal_image = Image.open(normal_path).convert("RGB")
+
+        if self.random_horizontal_flip and random.random() > 0.5:
+            rgb_image = rgb_image.transpose(Image.FLIP_LEFT_RIGHT)
+            normal_image = normal_image.transpose(Image.FLIP_LEFT_RIGHT)
+            np_normal = np.array(normal_image)
+            np_normal[:, :, 0] = 255 - np_normal[:, :, 0]
+            normal_image = Image.fromarray(np_normal)
+
+        if self.rgb_resize is not None:
+            rgb_image = self.rgb_resize(rgb_image)
+            normal_image = self.normal_resize(normal_image)
+
+        rgb_tensor = self.to_tensor(rgb_image) * 2.0 - 1.0
+        normal_tensor = self.to_tensor(normal_image) * 2.0 - 1.0
+        normal_tensor = torch.nn.functional.normalize(normal_tensor, p=2, dim=0)
+
+        height, width = rgb_tensor.shape[1], rgb_tensor.shape[2]
+        val_mask = torch.ones((1, height, width), dtype=torch.bool)
+        metric_tensor = torch.zeros((1, height, width), dtype=torch.float32)
+        depth_tensor = torch.zeros((3, height, width), dtype=torch.float32)
+
+        return {
+            "rgb": rgb_tensor,
+            "depth": depth_tensor,
+            "metric": metric_tensor,
+            "normals": normal_tensor,
+            "val_mask": val_mask,
+            "domain": "custom",
+        }
