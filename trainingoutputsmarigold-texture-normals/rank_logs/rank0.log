@@ -41,3 +41,176 @@ encode done
 unet forward start
 unet hidden states done
 input concat done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+unet forward done
+vae decode start
+vae decode done
+loss start
+loss done
+gather start
+gather done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+unet forward done
+vae decode start
+vae decode done
+loss start
+loss done
+gather start
+gather done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+unet forward done
+vae decode start
+vae decode done
+loss start
+loss done
+gather start
+gather done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+unet forward done
+vae decode start
+vae decode done
+loss start
+loss done
+gather start
+gather done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+unet forward done
+vae decode start
+vae decode done
+loss start
+loss done
+gather start
+gather done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+unet forward done
+vae decode start
+vae decode done
+loss start
+loss done
+gather start
+gather done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+unet forward done
+vae decode start
+vae decode done
+loss start
+loss done
+gather start
+gather done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+unet forward done
+vae decode start
+vae decode done
+loss start
+loss done
+gather start
+gather done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+unet forward done
+vae decode start
+vae decode done
+loss start
+loss done
+gather start
+gather done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+unet forward done
+vae decode start
+vae decode done
+loss start
+loss done
+gather start
+gather done
+encode start
+encode done
+unet forward start
+unet hidden states done
+input concat done
+unet forward done
+vae decode start
+vae decode done
+loss start
+loss done
+gather start
+gather done
+backward start

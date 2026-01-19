@@ -426,6 +426,7 @@ def main():
             shuffle=True,
             batch_size=args.train_batch_size,
             num_workers=args.dataloader_num_workers,
+            drop_last=True,
         )
         num_train_examples = len(train_dataset_custom)
     else:
@@ -654,12 +655,17 @@ def main():
                 rlog("gather done")
 
                 # Backpropagate
+                rlog("backward start")
                 accelerator.backward(loss)
+                rlog("backward loss")
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
                 optimizer.step()
+                rlog("backward optiimzer step")
                 lr_scheduler.step()
+                rlog("backward scheduler step")
                 optimizer.zero_grad()
+                rlog("backward done")
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
